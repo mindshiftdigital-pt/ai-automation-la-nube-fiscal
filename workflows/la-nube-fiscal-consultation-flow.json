@@ -1,1 +1,629 @@
-
+{
+  "name": "La Nube Fiscal - AI Automation",
+  "id": "la-nube-fiscal-001",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Webhook - New Consultation",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "la-nube-fiscal/new-consultation",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "name": "Function - Normalize Input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        500,
+        200
+      ],
+      "parameters": {
+        "functionCode": "const data = $input.item.json;\nconst out = {};\nout.clientName = (data.clientName || data.name || '').trim();\nout.clientEmail = (data.clientEmail || data.email || '').toLowerCase().trim();\nout.clientPhone = (data.clientPhone || data.phone || '').replace(/\\s+/g,'');\nout.service = data.service || 'General Consultation';\nout.requestedStart = data.requestedStart || data.start || null;\nout.isNewClient = !!(data.isNewClient === undefined ? true : data.isNewClient);\nreturn { json: out };\n"
+      }
+    },
+    {
+      "name": "Function - Validate Required Fields",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        750,
+        200
+      ],
+      "parameters": {
+        "functionCode": "const item = $input.item.json;\nconst missing = [];\nif(!item.clientName) missing.push('clientName');\nif(!item.clientEmail) missing.push('clientEmail');\nif(!item.clientPhone) missing.push('clientPhone');\nif(missing.length) {\n  return [{ json: { status: 'missing', missing } }];\n} else {\n  return [{ json: { status: 'ok', ...item } }];\n}\n"
+      }
+    },
+    {
+      "name": "If - Missing Fields?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json[\"status\"] === 'missing'}}",
+              "operation": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Send Email - Request Missing Info",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        120
+      ],
+      "parameters": {
+        "fromEmail": "no-reply@la-nube-fiscal.example",
+        "toEmail": "={{$json[\"clientEmail\"]}}",
+        "subject": "Faltan datos para agendar tu consulta",
+        "text": "Hola {{$json[\"clientName\"] || 'cliente'}},\\n\\nHemos recibido tu solicitud, pero faltan los siguientes campos: {{$json[\"missing\"].join(', ')}}. Por favor responde con la información faltante para poder agendar la consulta.\\n\\nSaludos,\\nLa Nube Fiscal"
+      }
+    },
+    {
+      "name": "Set - Assign Consultant Rules",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ],
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "service",
+              "value": "={{$json[\"service\"]}}"
+            },
+            {
+              "name": "requestedStart",
+              "value": "={{$json[\"requestedStart\"]}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "HTTP Request - Check Consultant Availability (Simulated)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        300
+      ],
+      "parameters": {
+        "url": "https://api.example.com/consultants/availability",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={ \"service\": $json[\"service\"], \"requestedStart\": $json[\"requestedStart\"] }"
+      }
+    },
+    {
+      "name": "Function - Choose Consultant (Fallback Logic)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        300
+      ],
+      "parameters": {
+        "functionCode": "const avail = $input.item.json.available || null;\nlet consultant = null;\nif(avail && avail.length) consultant = avail[0];\nelse {\n  // fallback round-robin sample\n  const pool = [{name:'Ana',email:'ana@la-nube.example'},{name:'Luis',email:'luis@la-nube.example'},{name:'María',email:'maria@la-nube.example'}];\n  const idx = Math.floor(Math.random()*pool.length);\n  consultant = pool[idx];\n}\nreturn [{ json: { consultant, ...$input.item.json } }];\n"
+      }
+    },
+    {
+      "name": "Google Calendar - Create Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        300
+      ],
+      "parameters": {
+        "operation": "create",
+        "calendarId": "primary",
+        "start": "={{ $json[\"requestedStart\"] || new Date().toISOString() }}",
+        "end": "={{new Date(new Date($json[\"requestedStart\"]).getTime()+30*60000).toISOString()}}",
+        "summary": "={{$json[\"clientName\"] + ' - ' + $json[\"service\"] }}",
+        "description": "Consultor: {{$json[\"consultant\"].name}} | Tel: {{$json[\"clientPhone\"]}} | Email: {{$json[\"clientEmail\"]}}"
+      }
+    },
+    {
+      "name": "HTTP Request - Trigger Phone Calling Agent (Twilio or 3rd party)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        300
+      ],
+      "parameters": {
+        "url": "https://api.phoneagent.example/call",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"to\": $json[\"clientPhone\"], \"name\": $json[\"clientName\"], \"start\": $json[\"requestedStart\"], \"consultant\": $json[\"consultant\"].name, \"type\": \"confirmation\" }"
+      }
+    },
+    {
+      "name": "Wait - Documents Upload (Webhook Wait)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        2500,
+        300
+      ],
+      "parameters": {
+        "mode": "until",
+        "until": {
+          "input": "={{$json[\"documentsUploaded\"] === true}}"
+        },
+        "waitFor": "custom"
+      }
+    },
+    {
+      "name": "Email - Send Document Upload Link",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        120
+      ],
+      "parameters": {
+        "fromEmail": "no-reply@la-nube-fiscal.example",
+        "toEmail": "={{$json[\"clientEmail\"]}}",
+        "subject": "Envíanos tus documentos para la consulta",
+        "text": "Hola {{$json[\"clientName\"]}},\\n\\nGracias por agendar. Por favor sube tus documentos aquí: https://secure-upload.la-nube-fiscal.example/upload?token={{$json[\"clientEmail\"]}}\\n\\nDocumentos requeridos:\\n- Identificación\\n- Comprobantes de ingresos\\n- Declaraciones anteriores (si aplica)\\n\\nSaludos,\\nLa Nube Fiscal"
+      }
+    },
+    {
+      "name": "Webhook - Documents Uploaded (Callback)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        2750,
+        450
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "la-nube-fiscal/documents-uploaded",
+        "responseMode": "onReceived"
+      }
+    },
+    {
+      "name": "Function - Mark Documents Received",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3000,
+        450
+      ],
+      "parameters": {
+        "functionCode": "const data = $input.item.json;\nreturn [{ json: { documentsUploaded: true, documents: data.files || data.documents || [] } }];\n"
+      }
+    },
+    {
+      "name": "Function - Verify Documents",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        3250,
+        450
+      ],
+      "parameters": {
+        "functionCode": "const docs = $input.item.json.documents || [];\nconst required = ['id','income_proof'];\nconst keys = docs.map(d=>d.type||d.name||'').map(s=>s.toLowerCase());\nconst missing = required.filter(r=>!keys.some(k=>k.includes(r)));\nif(missing.length) return [{ json: { verified: false, missing } }];\nreturn [{ json: { verified: true, count: docs.length } }];\n"
+      }
+    },
+    {
+      "name": "If - Documents Verified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3500,
+        450
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json[\"verified\"] === true}}",
+              "operation": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Email - Request Missing Documents",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        3750,
+        380
+      ],
+      "parameters": {
+        "fromEmail": "no-reply@la-nube-fiscal.example",
+        "toEmail": "={{$json[\"clientEmail\"]}}",
+        "subject": "Faltan documentos para tu consulta",
+        "text": "Hola,\\n\\nHemos revisado los archivos y faltan los siguientes documentos: {{$json[\"missing\"].join(', ')}}. Por favor sube los documentos faltantes en el enlace anterior.\\n\\nGracias."
+      }
+    },
+    {
+      "name": "Set - Prepare Prefill Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        3750,
+        520
+      ],
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "clientName",
+              "value": "={{$json[\"clientName\"]}}"
+            },
+            {
+              "name": "clientEmail",
+              "value": "={{$json[\"clientEmail\"]}}"
+            },
+            {
+              "name": "clientPhone",
+              "value": "={{$json[\"clientPhone\"]}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "HTTP Request - Pre-fill Forms (e.g., Google Forms/API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        4000,
+        520
+      ],
+      "parameters": {
+        "url": "https://api.forms.example/prefill",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"clientName\": $json[\"clientName\"], \"clientEmail\": $json[\"clientEmail\"], \"documentsCount\": $json[\"count\"] }"
+      }
+    },
+    {
+      "name": "Wait - Until Appointment Ends (Simulated)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        4250,
+        520
+      ],
+      "parameters": {
+        "mode": "time",
+        "time": 3600
+      }
+    },
+    {
+      "name": "Email - Post Consultation Follow-up",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        4500,
+        520
+      ],
+      "parameters": {
+        "fromEmail": "no-reply@la-nube-fiscal.example",
+        "toEmail": "={{$json[\"clientEmail\"]}}",
+        "subject": "Gracias por tu consulta - Siguientes pasos",
+        "text": "Hola {{$json[\"clientName\"]}},\\n\\nGracias por tu tiempo. En breve tu consultor {{$json[\"consultant\"].name}} compartirá los siguientes pasos. Si deseas, puedes dejar feedback respondiendo este correo.\\n\\nSaludos,\\nLa Nube Fiscal"
+      }
+    },
+    {
+      "name": "HTTP Request - Internal Logging (Analytics)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        4750,
+        520
+      ],
+      "parameters": {
+        "url": "https://analytics.example.com/ingest",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"event\": \"consultation_completed\", \"client\": $json[\"clientEmail\"], \"timestamp\": \"2025-09-17T11:33:47.224197\" }"
+      }
+    },
+    {
+      "name": "HTTP Request - Notify Team (Slack/MS Teams webhook)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        5000,
+        520
+      ],
+      "parameters": {
+        "url": "https://hooks.example.com/services/notify-team",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"text\": \"Consulta completada: {{$json[\\\"clientEmail\\\"]}} - Consultor: {{$json[\\\"consultant\\\"].name}}\" }"
+      }
+    },
+    {
+      "name": "Google Sheets - Append Row (Internal DB)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        5250,
+        520
+      ],
+      "parameters": {
+        "operation": "append",
+        "sheetId": "your_sheet_id_here",
+        "range": "A1",
+        "options": {},
+        "data": "={{[[$json[\"clientName\"], $json[\"clientEmail\"], $json[\"clientPhone\"], $json[\"service\"], $json[\"requestedStart\"], $json[\"consultant\"].name]]}}"
+      }
+    },
+    {
+      "name": "Function - Final Audit Log",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        5500,
+        520
+      ],
+      "parameters": {
+        "functionCode": "return [{ json: { audit: { workflow: 'la-nube-fiscal', version: '1', ts: new Date().toISOString(), data: $json } } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - New Consultation": {
+      "main": [
+        [
+          {
+            "node": "Function - Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Function - Validate Required Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Validate Required Fields": {
+      "main": [
+        [
+          {
+            "node": "If - Missing Fields?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If - Missing Fields?": {
+      "main": [
+        [
+          {
+            "node": "Send Email - Request Missing Info",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set - Assign Consultant Rules",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Set - Assign Consultant Rules": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Check Consultant Availability (Simulated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Check Consultant Availability (Simulated)": {
+      "main": [
+        [
+          {
+            "node": "Function - Choose Consultant (Fallback Logic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Choose Consultant (Fallback Logic)": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar - Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Create Event": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Trigger Phone Calling Agent (Twilio or 3rd party)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email - Send Document Upload Link",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Trigger Phone Calling Agent (Twilio or 3rd party)": {
+      "main": [
+        [
+          {
+            "node": "Wait - Documents Upload (Webhook Wait)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email - Send Document Upload Link": {
+      "main": [
+        [
+          {
+            "node": "Wait - Documents Upload (Webhook Wait)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Documents Uploaded (Callback)": {
+      "main": [
+        [
+          {
+            "node": "Function - Mark Documents Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Mark Documents Received": {
+      "main": [
+        [
+          {
+            "node": "Function - Verify Documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Function - Verify Documents": {
+      "main": [
+        [
+          {
+            "node": "If - Documents Verified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If - Documents Verified?": {
+      "main": [
+        [
+          {
+            "node": "Set - Prepare Prefill Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email - Request Missing Documents",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Set - Prepare Prefill Data": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Pre-fill Forms (e.g., Google Forms/API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Pre-fill Forms (e.g., Google Forms/API)": {
+      "main": [
+        [
+          {
+            "node": "Wait - Until Appointment Ends (Simulated)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Until Appointment Ends (Simulated)": {
+      "main": [
+        [
+          {
+            "node": "Email - Post Consultation Follow-up",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request - Internal Logging (Analytics)",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "HTTP Request - Notify Team (Slack/MS Teams webhook)",
+            "type": "main",
+            "index": 2
+          },
+          {
+            "node": "Google Sheets - Append Row (Internal DB)",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Google Sheets - Append Row (Internal DB)": {
+      "main": [
+        [
+          {
+            "node": "Function - Final Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "createdAt": "2025-09-17T11:33:47.224238",
+  "updatedAt": "2025-09-17T11:33:47.224239",
+  "settings": {}
+}
